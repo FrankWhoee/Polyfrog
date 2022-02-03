@@ -77,7 +77,7 @@ addparser.add_argument("-r", "--rank")
 prefix = "!"
 
 client = commands.Bot(command_prefix=prefix, intents=intents)
-
+client.remove_command('help')
 con = sqlite3.connect('accounts.db')
 cur = con.cursor()
 # Create table
@@ -171,6 +171,16 @@ async def status(ctx: Context):
     embed = await create_status_embed()
     await ctx.send(embed=embed)
 
+@client.command()
+async def help(ctx: Context):
+    embed = discord.Embed(title="Polyfrog Commands", description="Use commands without arguments to get more help details",color=0x00d12a)
+    embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar_url)
+    embed.add_field(name="!add", value="Add account.", inline=True)
+    embed.add_field(name="!delete `USERNAME`", value="Delete account.", inline=True)
+    embed.add_field(name="!get `RANK`", value="Get an account that can play with RANK.", inline=True)
+    embed.add_field(name="!mine", value="Check what accounts you have.", inline=True)
+    embed.add_field(name="!view `USERNAME`", value="Look at the details for one particular account.", inline=True)
+    await ctx.send(embed=embed)
 
 @client.command()
 async def ax(ctx: Context, *args):
@@ -268,6 +278,7 @@ async def mine(ctx: Context):
         embed = discord.Embed(title="Your accounts", description=description, color=0x00d12a)
         embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar_url)
         await ctx.send(embed=embed)
+
 
 
 @client.command()
