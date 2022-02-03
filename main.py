@@ -1,15 +1,16 @@
+import argparse
+import math
+import os
+import sqlite3
 import subprocess
 import time
 from datetime import datetime
-import math
-import discord
-import sqlite3
-import os
 
+import discord
+from discord import Reaction, User
+from discord.ext import commands
 from discord.ext.commands import Context
 from dotenv import load_dotenv
-from discord.ext import commands
-import argparse
 
 # from discord.ext.commands import client
 
@@ -20,8 +21,8 @@ load_dotenv()
 start_time = datetime.today()
 
 rank_map = {
-    "l": -1,
-    "u": 0,
+    "lo": -1,
+    "un": 0,
     "i1": 1,
     "i2": 2,
     "i3": 3,
@@ -41,7 +42,7 @@ rank_map = {
     "d2": 17,
     "d3": 18,
     "im": 19,
-    "r": 20,
+    "ra": 20,
 }
 
 inv_rank_map = {v: k for k, v in rank_map.items()}
@@ -94,12 +95,23 @@ except:
 # Save (commit) the changes
 con.commit()
 
+sdnguild = None
+emojis = None
+emoji_map = {}
+
 
 @client.event
 async def on_ready():
     global start_time
+    global sdnguild
+    global emojis
     print('Logged in as {0.user}'.format(client))
     start_time = datetime.today()
+    sdnguild = client.get_guild(935001989727809616)
+    emojis = await sdnguild.fetch_emojis()
+    for e in emojis:
+        emoji_map[e.name] = e
+    await client.change_presence(activity=discord.Activity(name="joinsdn.com", type=discord.ActivityType.watching))
 
 
 @client.event
@@ -138,6 +150,28 @@ async def create_status_embed():
     return embed
 
 
+async def create_account_embed(info, show_password=False):
+    if len(info) == 1:
+        info = info[0]
+    if len(info) == 0:
+        embed = discord.Embed(title="No account matches this username", description="", color=0xff0000)
+    else:
+        embed = discord.Embed(title=info[2] + "#" + info[3], description="", color=0x00ff00)
+        owner = await client.fetch_user(info[5])
+        embed.set_author(name=owner.name)
+        embed.set_thumbnail(url=owner.avatar_url)
+        added = datetime.fromtimestamp(info[6])
+        last_updated = datetime.fromtimestamp(info[7])
+
+        embed.add_field(name="Username", value=info[0], inline=True)
+        if show_password:
+            embed.add_field(name="Password", value=info[1], inline=True)
+        embed.add_field(name="Rank", value=emoji_map[inv_rank_map[info[4]]], inline=True)
+        embed.add_field(name="Last updated", value=str(last_updated), inline=True)
+        embed.set_footer(text="Account added on " + str(added))
+    return embed
+
+
 @client.command()
 async def status(ctx: Context):
     embed = await create_status_embed()
@@ -147,13 +181,21 @@ async def status(ctx: Context):
 @client.command()
 async def ax(ctx: Context, *args):
     account = addparser.parse_args(args)
-    now = int(time.time() * 1000)
+    now = int(time.time())
     if len(args) == 0:
         await ctx.send("USAGE: `!ax -u USERNAME -p PASSWORD -i RIOTID#TAG(optional) -r RANK(optional)`")
     elif not account.username or not account.password:
         await ctx.send(
             "Missing username or password. USAGE: `!ax -u USERNAME -p PASSWORD -i RIOTID#TAG(optional) -r RANK(optional)`")
     else:
+        cur.execute("SELECT * FROM accounts WHERE username=?", (account.username,))
+        output = cur.fetchall()
+        if len(output) > 0:
+            if output[0][5] == ctx.author.id:
+                interactions[ctx.author.id]["update"] = True
+                prompt = await ctx.channel.send(
+                    "This account already exists in the database. Use `!add` without arguments to update the account.")
+                return
         riotid = None if not account.id else " ".join(account.id).split("#")
         tag = None if not riotid else riotid[1]
         riotid = None if not riotid else riotid[0]
@@ -173,19 +215,83 @@ async def exit(ctx: Context, *args):
     del interactions[ctx.author.id]
     await ctx.send("Process cancelled.")
 
+@client.command()
+async def get(ctx: Context, *args):
+    if len(args) == 0 or (len(args) == 1 and args[0] not in ["unrated", "locked", "radiant", "immortal"]):
+        await ctx.send("Request for an account that can play with the inputted rank. \nUSAGE: `!get HIGHEST_RANK_IN_PARTY`\nEXAMPLE: `!get silver 3`")
+        return
+    rank = extract_rank(" ".join(args))
+    if rank not in rank_map.keys():
+        prompt = await ctx.channel.send(
+            "Invalid rank received. Please type in the rank with a space between the league and division. Example: silver 3")
+        return
+    range = parity_check(rank)
+    rank = rank_map[rank]
+    cur.execute("SELECT * FROM accounts WHERE rank BETWEEN ? AND ?", (range[0],range[-1]))
+    output = cur.fetchall()
+    if len(output) == 0:
+        embed = discord.Embed(title="No accounts were found that can play with your selected rank.", color=0xff0000)
+        await ctx.send(embed=embed)
+        return
+    else:
+        closest_rank = output[0]
+        for info in output:
+            if abs(info[4] - rank) < closest_rank[4]:
+                closest_rank = info
+
+        apmsg = await ctx.channel.send("Account found. Waiting for approval...")
+
+        owner = await client.fetch_user(closest_rank[5])
+        if owner.id == ctx.author.id:
+            await owner.send("Since this is your account, no approval is required.", embed=await create_account_embed(closest_rank, show_password=True))
+            await apmsg.delete()
+        else:
+            await owner.send(ctx.author.mention + " is requesting to use the following account:")
+            await owner.send(embed=await create_account_embed(closest_rank))
+            message = await owner.send("React with ✅ to approve and ❌ to deny this request.")
+            interactions[closest_rank[5]] = {"fn": "reqapproval", "account": closest_rank, "ctx": ctx, "message":message, "apmsg": apmsg}
+            await message.add_reaction("✅")
+            await message.add_reaction("❌")
+
+
 
 @client.command()
 async def add(ctx: Context, *args):
     if len(args) > 0:
         ax(ctx, args)
     elif ctx.author.id not in interactions.keys():
-        interactions[ctx.author.id] = {"fn": "add", "step": 1, "data": []}
-        await ctx.send(
-            "This command is for adding alt accounts to the database. Anybody who asks to use this account will "
-            "require your permission to get the credentials, everytime. However, passwords are stored in plain text. "
-            "**Do not add accounts that you care about**. Just follow the prompts, and use !exit if you "
-            "want to cancel the process.")
-        await ctx.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
+        interactions[ctx.author.id] = {"fn": "add", "step": 1, "data": [], "messages": [], "update": False}
+        embed = discord.Embed(title="!add",
+                              description="This command is for adding alt accounts to the database. Anybody who asks to use this account will "
+                                          "require your permission to get the credentials, everytime. However, passwords are stored in plain text. "
+                                          "**Do not add accounts that you care about**. Just follow the prompts, and use !exit if you "
+                                          "want to cancel the process.", color=0x00d12a)
+        await ctx.send(embed=embed)
+        prompt = await ctx.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
+        interactions[ctx.author.id]["messages"].append(prompt)
+    else:
+        await ctx.send("You currently have an ongoing interaction, please use `!exit` to stop it.")
+
+@client.command()
+async def delete(ctx: Context, username):
+    cur.execute("SELECT * FROM accounts WHERE username=?", (username,))
+    output = cur.fetchall()
+    if len(output) > 0:
+        if output[0][5] == ctx.author.id:
+            cur.execute("DELETE FROM accounts WHERE username=?", (username,))
+            embed = discord.Embed(title="Account deleted succesfully.", color=0x00ff00)
+            await ctx.send(embed=embed)
+        else:
+            embed = discord.Embed(title="You do not have permission to delete this account.", color=0xff0000)
+            await ctx.send(embed=embed)
+
+
+@client.command()
+async def view(ctx: Context, username):
+    cur.execute("SELECT * FROM accounts WHERE username=?", (username,))
+    output = cur.fetchall()
+    embed = await create_account_embed(output)
+    await ctx.send(embed=embed)
 
 
 @client.event
@@ -194,53 +300,132 @@ async def on_message(msg: discord.Message):
         await client.process_commands(msg)
         return
     if msg.author.id in interactions.keys():
-        if interactions[msg.author.id]["fn"] == "add":
-            if interactions[msg.author.id]["step"] == 1:
-                interactions[msg.author.id]["data"].append(msg.content)
-                await msg.channel.send(
+        intobj = interactions[msg.author.id]
+        if intobj["fn"] == "add":
+            intobj["messages"].append(msg)
+            while len(intobj["messages"]) > 0:
+                m = intobj["messages"].pop()
+                try:
+                    await m.delete()
+                except:
+                    continue
+            if intobj["step"] == 1:
+                cur.execute("SELECT * FROM accounts WHERE username=?", (msg.content,))
+                output = cur.fetchall()
+                if len(output) > 0:
+                    if output[0][5] == msg.author.id:
+                        intobj["update"] = True
+                        prompt = await msg.channel.send(
+                            "This account already exists in the database. Use `!exit` to cancel this transaction, or continue to update this account's information.")
+                    else:
+                        prompt = await msg.channel.send(
+                            "This account already exists in the database. You do not own this account, and can not update it. Transaction cancelled.")
+                        del intobj
+                        return
+                    intobj["messages"].append(prompt)
+                intobj["data"].append(msg.content)
+
+                prompt = await msg.channel.send(
                     "What is the login password? This password will be stored in plain text. **Do not add accounts that you care about.**")
-                interactions[msg.author.id]["step"] += 1
-            elif interactions[msg.author.id]["step"] == 2:
-                interactions[msg.author.id]["data"].append(msg.content)
-                await msg.channel.send("Type in your Riot ID. Example: SDN Polyfrog#008")
-                interactions[msg.author.id]["step"] += 1
-            elif interactions[msg.author.id]["step"] == 3:
-                interactions[msg.author.id]["data"].append(msg.content)
-                await msg.channel.send(
-                    "Type in the rank of this account. Example: silver 3"
-                    "If it has not reached the level required for competitive, type `locked`"
-                    "If it is unranked, type `unranked`"
-                     "If it is immortal or radiant, type `immortal` or `radiant`")
-                interactions[msg.author.id]["step"] += 1
-            elif interactions[msg.author.id]["step"] == 4:
-                interactions[msg.author.id]["data"].append(msg.content)
-                await msg.channel.send("We have all the information we need! Wait a second while I add your account.")
-                username = interactions[msg.author.id]["data"][0]
-                password = interactions[msg.author.id]["data"][1]
-                riotid = interactions[msg.author.id]["data"][2].split("#")
+                intobj["messages"].append(prompt)
+                intobj["step"] += 1
+            elif intobj["step"] == 2:
+                intobj["data"].append(msg.content)
+                prompt = await msg.channel.send("Type in your Riot ID. Example: SDN Polyfrog#008")
+                intobj["step"] += 1
+                intobj["messages"].append(prompt)
+            elif intobj["step"] == 3:
+                if "#" not in msg.content:
+                    prompt = await msg.channel.send(
+                        "Riot ID requires a #. Please retype your Riot ID. Example: SDN Polyfrog#008")
+                    return
+                    interactions[msg.author.id]["messages"].append(prompt)
+                if len(msg.content.split("#")[0]) > 16 or len(msg.content.split("#")[1]) > 5:
+                    prompt = await msg.channel.send(
+                        "Riot ID requires the name to be 16 characters at most and the tag to be 5 characters at most. Please retype your Riot ID. Example: SDN Polyfrog#008")
+                    return
+                    interactions[msg.author.id]["messages"].append(prompt)
+                intobj["data"].append(msg.content)
+                prompt = await msg.channel.send(
+                    "Type in the rank of this account. Example: silver 3\n"
+                    "If it has not reached the level required for competitive, type `locked`\n"
+                    "If it is unranked, type `unranked`\n"
+                    "If it is immortal or radiant, type `immortal` or `radiant`\n")
+                intobj["messages"].append(prompt)
+                intobj["step"] += 1
+            elif intobj["step"] == 4:
+                rank = extract_rank(msg)
+                if rank not in rank_map.keys():
+                    prompt = await msg.channel.send(
+                        "Invalid rank received. Please type in the rank with a space between the league and division. Example: silver 3")
+                    intobj["messages"].append(prompt)
+                    return
+                prompt = await msg.channel.send(
+                    "We have all the information we need! Wait a second while I add your account.")
+                intobj["messages"].append(prompt)
+                username = intobj["data"][0]
+                password = intobj["data"][1]
+                riotid = intobj["data"][2].split("#")
                 tag = None if not riotid else riotid[1]
                 riotid = None if not riotid else riotid[0]
-                rank = interactions[msg.author.id]["data"][3].lower()
-                if rank == "locked":
-                    rank = "l"
-                elif rank == "unranked":
-                    rank = "u"
-                elif rank == "immortal":
-                    rank = "im"
-                elif rank == "radiant":
-                    rank = "r"
-                else:
-                    rank = rank[0] + rank.split(" ")[1]
                 rank = rank_map[rank]
-                now = int(time.time() * 1000)
-                cur.execute(
-            'INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)', (username, password, riotid,
-                                                              tag, rank, msg.author.id,
-                                                              now, now))
-            con.commit()
-            await msg.channel.send(
-            "Done. Your account has been added. Use `!delete " + interactions[msg.author.id]["data"][
-                0] + "` to remove this account from the database.")
+                now = int(time.time())
+                if intobj["update"]:
+                    cur.execute(
+                        'UPDATE accounts SET password=?, riotid=?, tag=?, rank=?, last_updated=? WHERE username = ?',
+                        (password, riotid,
+                         tag, rank, now, username))
+                    con.commit()
+                    prompt = await msg.channel.send(
+                        "Done. Your account has been updated. Use `!delete " + intobj["data"][
+                            0] + "` to remove this account from the database.")
+                    intobj["messages"].append(prompt)
+                else:
+                    cur.execute(
+                        'INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)', (username, password, riotid,
+                                                                          tag, rank, msg.author.id,
+                                                                          now, now))
+                    con.commit()
+                    prompt = await msg.channel.send(
+                        "Done. Your account has been added. Use `!delete " + intobj["data"][
+                            0] + "` to remove this account from the database.")
+                    intobj["messages"].append(prompt)
+                await view(msg.channel, username)
+                del intobj
 
 
-            client.run(os.environ["PF_TOKEN"])
+@client.event
+async def on_reaction_add(reaction,user):
+    if user.id in interactions:
+        intobj = interactions[user.id]
+        if intobj["fn"] == "reqapproval":
+            if reaction.emoji == "✅":
+                await intobj["ctx"].author.send("Your request was approved. Here are the account details:")
+                await intobj["ctx"].author.send(embed=await create_account_embed(intobj["account"], show_password=True))
+            elif reaction.emoji == "❌":
+                await intobj["ctx"].author.send("Your request was denied.")
+        await intobj["apmsg"].delete()
+        del intobj
+
+
+def extract_rank(msg):
+    if isinstance(msg,str):
+        rank = msg
+    else:
+        rank = msg.content.lower()
+    if rank == "locked":
+        rank = "lo"
+    elif rank == "unranked":
+        rank = "un"
+    elif rank == "unrated":
+        rank = "un"
+    elif rank == "immortal":
+        rank = "im"
+    elif rank == "radiant":
+        rank = "ra"
+    else:
+        rank = rank[0] + rank.split(" ")[1]
+    return rank
+
+
+client.run(os.environ["PF_TOKEN"])
