@@ -48,28 +48,22 @@ rank_map = {
 inv_rank_map = {v: k for k, v in rank_map.items()}
 
 
-def parity_check(rank):
+def disparity_check(rank):
     if isinstance(rank, str):
         r = rank_map[rank]
     elif isinstance(rank, int):
         r = rank
 
-    if r >= 19:
-        return [19, 20]
-    elif r >= 16:
-        return [16, 17, 18, 19, 20]
-    elif r >= 15:
-        return [15, 16, 17, 18]
-    elif r >= 14:
-        return [14, 15, 16, 17]
-    elif r >= 13:
-        return [13, 14, 15, 16]
-    elif r >= 10:
-        return [10, 11, 12, 13, 14, 15]
-    elif r >= 7:
-        return [7, 8, 9, 10, 11, 12]
-    else:
-        return [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    disparity_map = [
+        [19, 20], [16, 17, 18, 19, 20], [15, 16, 17, 18], [14, 15, 16, 17], [13, 14, 15, 16], [10, 11, 12, 13, 14, 15],
+        [7, 8, 9, 10, 11, 12], [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    ]
+
+    for d in disparity_map[::-1]:
+        if r in d:
+            return d
+
+
 
 
 interactions = {}
@@ -208,26 +202,28 @@ async def ax(ctx: Context, *args):
 
 
 @client.command()
-async def exit(ctx: Context, *args):
+async def exit(ctx: Context):
     if ctx.author.id not in interactions.keys():
         await ctx.send("No process was occurring.")
         return
     del interactions[ctx.author.id]
     await ctx.send("Process cancelled.")
 
+
 @client.command()
 async def get(ctx: Context, *args):
     if len(args) == 0 or (len(args) == 1 and args[0] not in ["unrated", "locked", "radiant", "immortal"]):
-        await ctx.send("Request for an account that can play with the inputted rank. \nUSAGE: `!get HIGHEST_RANK_IN_PARTY`\nEXAMPLE: `!get silver 3`")
+        await ctx.send(
+            "Request for an account that can play with the inputted rank. \nUSAGE: `!get HIGHEST_RANK_IN_PARTY`\nEXAMPLE: `!get silver 3`")
         return
     rank = extract_rank(" ".join(args))
     if rank not in rank_map.keys():
         prompt = await ctx.channel.send(
             "Invalid rank received. Please type in the rank with a space between the league and division. Example: silver 3")
         return
-    range = parity_check(rank)
+    range = disparity_check(rank)
     rank = rank_map[rank]
-    cur.execute("SELECT * FROM accounts WHERE rank BETWEEN ? AND ?", (range[0],range[-1]))
+    cur.execute("SELECT * FROM accounts WHERE rank BETWEEN ? AND ?", (range[0], range[-1]))
     output = cur.fetchall()
     if len(output) == 0:
         embed = discord.Embed(title="No accounts were found that can play with your selected rank.", color=0xff0000)
@@ -243,16 +239,35 @@ async def get(ctx: Context, *args):
 
         owner = await client.fetch_user(closest_rank[5])
         if owner.id == ctx.author.id:
-            await owner.send("Since this is your account, no approval is required.", embed=await create_account_embed(closest_rank, show_password=True))
+            await owner.send("Since this is your account, no approval is required.",
+                             embed=await create_account_embed(closest_rank, show_password=True))
             await apmsg.delete()
         else:
             await owner.send(ctx.author.mention + " is requesting to use the following account:")
             await owner.send(embed=await create_account_embed(closest_rank))
             message = await owner.send("React with ✅ to approve and ❌ to deny this request.")
-            interactions[closest_rank[5]] = {"fn": "reqapproval", "account": closest_rank, "ctx": ctx, "message":message, "apmsg": apmsg}
+            interactions[closest_rank[5]] = {"fn": "reqapproval", "account": closest_rank, "ctx": ctx,
+                                             "message": message, "apmsg": apmsg}
             await message.add_reaction("✅")
             await message.add_reaction("❌")
 
+
+@client.command()
+async def mine(ctx: Context):
+    cur.execute("SELECT * FROM accounts WHERE owner=?", (ctx.author.id,))
+    output = cur.fetchall()
+    if len(output) == 0:
+        embed = discord.Embed(title="You don't have any accounts.", color=0x00ff00)
+        await ctx.send(embed=embed)
+        return
+    else:
+        description = ""
+        for acc in output:
+            description += str(emoji_map[inv_rank_map[acc[4]]]) + " " + acc[2] + "#" + acc[3] + "　•　" + acc[0] + "\n"
+
+        embed = discord.Embed(title="Your accounts", description=description, color=0x00d12a)
+        embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar_url)
+        await ctx.send(embed=embed)
 
 
 @client.command()
@@ -266,11 +281,12 @@ async def add(ctx: Context, *args):
                                           "require your permission to get the credentials, everytime. However, passwords are stored in plain text. "
                                           "**Do not add accounts that you care about**. Just follow the prompts, and use !exit if you "
                                           "want to cancel the process.", color=0x00d12a)
-        await ctx.send(embed=embed)
-        prompt = await ctx.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
+        await ctx.author.send(embed=embed)
+        prompt = await ctx.author.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
         interactions[ctx.author.id]["messages"].append(prompt)
     else:
         await ctx.send("You currently have an ongoing interaction, please use `!exit` to stop it.")
+
 
 @client.command()
 async def delete(ctx: Context, username):
@@ -301,7 +317,7 @@ async def on_message(msg: discord.Message):
         return
     if msg.author.id in interactions.keys():
         intobj = interactions[msg.author.id]
-        if intobj["fn"] == "add":
+        if intobj["fn"] == "add" and msg.channel.recipient == msg.author:
             intobj["messages"].append(msg)
             while len(intobj["messages"]) > 0:
                 m = intobj["messages"].pop()
@@ -391,11 +407,11 @@ async def on_message(msg: discord.Message):
                             0] + "` to remove this account from the database.")
                     intobj["messages"].append(prompt)
                 await view(msg.channel, username)
-                del intobj
+                del interactions[msg.author.id]
 
 
 @client.event
-async def on_reaction_add(reaction,user):
+async def on_reaction_add(reaction, user):
     if user.id in interactions:
         intobj = interactions[user.id]
         if intobj["fn"] == "reqapproval":
@@ -405,11 +421,11 @@ async def on_reaction_add(reaction,user):
             elif reaction.emoji == "❌":
                 await intobj["ctx"].author.send("Your request was denied.")
         await intobj["apmsg"].delete()
-        del intobj
+        del interactions[user.id]
 
 
 def extract_rank(msg):
-    if isinstance(msg,str):
+    if isinstance(msg, str):
         rank = msg
     else:
         rank = msg.content.lower()
