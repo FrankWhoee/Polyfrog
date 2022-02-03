@@ -64,8 +64,6 @@ def disparity_check(rank):
             return d
 
 
-
-
 interactions = {}
 
 addparser = argparse.ArgumentParser()
@@ -171,23 +169,32 @@ async def status(ctx: Context):
     embed = await create_status_embed()
     await ctx.send(embed=embed)
 
+
 @client.command()
 async def help(ctx: Context):
-    embed = discord.Embed(title="Polyfrog Commands", description="Use commands without arguments to get more help details",color=0x00d12a)
+    embed = discord.Embed(title="Polyfrog Commands",
+                          description="Use commands without arguments to get more help details", color=0x00d12a)
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar_url)
     embed.add_field(name="!add", value="Add account.", inline=True)
     embed.add_field(name="!delete `USERNAME`", value="Delete account.", inline=True)
     embed.add_field(name="!get `RANK`", value="Get an account that can play with RANK.", inline=True)
+    embed.add_field(name="!update `USERNAME`",
+                    value="Update a particular attribute of your account matched with `USERNAME`", inline=True)
     embed.add_field(name="!mine", value="Check what accounts you have.", inline=True)
     embed.add_field(name="!view `USERNAME`", value="Look at the details for one particular account.", inline=True)
+    embed.add_field(name="!inspect `USERNAME`", value="DMs you account details **with password**.", inline=True)
+
     await ctx.send(embed=embed)
+
 
 @client.command()
 async def ax(ctx: Context, *args):
     account = addparser.parse_args(args)
     now = int(time.time())
     if len(args) == 0:
-        await ctx.send("USAGE: `!ax -u USERNAME -p PASSWORD -i RIOTID#TAG(optional) -r RANK(optional)`")
+        await ctx.send(
+            "USAGE: `!ax -u USERNAME -p PASSWORD -i RIOTID#TAG(optional) -r RANK(optional)`\nUse !add without arguments"
+            " for interactive guide.")
     elif not account.username or not account.password:
         await ctx.send(
             "Missing username or password. USAGE: `!ax -u USERNAME -p PASSWORD -i RIOTID#TAG(optional) -r RANK(optional)`")
@@ -209,6 +216,57 @@ async def ax(ctx: Context, *args):
                                                               tag, account.rank, ctx.author.id,
                                                               now, now))
         con.commit()
+
+
+@client.command()
+async def update(ctx: Context, *args):
+    if ctx.author.id in interactions.keys():
+        await ctx.send("You currently have an ongoing interaction, please use `!exit` to stop it.")
+        return
+    if len(args) != 1:
+        await ctx.send("USAGE: `!update USERNAME`")
+        return
+    cur.execute("SELECT * FROM accounts WHERE username=?", (args[0],))
+    output = cur.fetchall()
+    if len(output) > 0:
+        if output[0][5] == ctx.author.id:
+            prompt = await ctx.send("What would you like to update?\n"
+                                    "1. Password\n"
+                                    "2. RiotID\n"
+                                    "3. Rank\n"
+                                    "4. Owner\n"
+                                    "*Use !exit to cancel this interaction*")
+            await prompt.add_reaction("1️⃣")
+            await prompt.add_reaction("2️⃣")
+            await prompt.add_reaction("3️⃣")
+            await prompt.add_reaction("4️⃣")
+            interactions[ctx.author.id] = {"fn": "update", "step": 1, "data": [], "messages": [], "react_message": prompt,
+                                           "username": args[0]}
+            interactions[ctx.author.id]["messages"].append(prompt)
+        else:
+            embed = discord.Embed(title="You do not have permission to inspect this account.", color=0xff0000)
+            await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(title="No account found with this username.", color=0xff0000)
+        await ctx.send(embed=embed)
+
+
+@client.command()
+async def add(ctx: Context, *args):
+    if len(args) > 0:
+        ax(ctx, args)
+    elif ctx.author.id not in interactions.keys():
+        interactions[ctx.author.id] = {"fn": "add", "step": 1, "data": [], "messages": [], "update": False}
+        embed = discord.Embed(title="!add",
+                              description="This command is for adding alt accounts to the database. Anybody who asks to use this account will "
+                                          "require your permission to get the credentials, everytime. However, passwords are stored in plain text. "
+                                          "**Do not add accounts that you care about**. Just follow the prompts, and use !exit if you "
+                                          "want to cancel the process.", color=0x00d12a)
+        await ctx.author.send(embed=embed)
+        prompt = await ctx.author.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
+        interactions[ctx.author.id]["messages"].append(prompt)
+    else:
+        await ctx.send("You currently have an ongoing interaction, please use `!exit` to stop it.")
 
 
 @client.command()
@@ -257,7 +315,7 @@ async def get(ctx: Context, *args):
             await owner.send(embed=await create_account_embed(closest_rank))
             message = await owner.send("React with ✅ to approve and ❌ to deny this request.")
             interactions[closest_rank[5]] = {"fn": "reqapproval", "account": closest_rank, "ctx": ctx,
-                                             "message": message, "apmsg": apmsg}
+                                             "react_message": message, "apmsg": apmsg}
             await message.add_reaction("✅")
             await message.add_reaction("❌")
 
@@ -278,25 +336,6 @@ async def mine(ctx: Context):
         embed = discord.Embed(title="Your accounts", description=description, color=0x00d12a)
         embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar_url)
         await ctx.send(embed=embed)
-
-
-
-@client.command()
-async def add(ctx: Context, *args):
-    if len(args) > 0:
-        ax(ctx, args)
-    elif ctx.author.id not in interactions.keys():
-        interactions[ctx.author.id] = {"fn": "add", "step": 1, "data": [], "messages": [], "update": False}
-        embed = discord.Embed(title="!add",
-                              description="This command is for adding alt accounts to the database. Anybody who asks to use this account will "
-                                          "require your permission to get the credentials, everytime. However, passwords are stored in plain text. "
-                                          "**Do not add accounts that you care about**. Just follow the prompts, and use !exit if you "
-                                          "want to cancel the process.", color=0x00d12a)
-        await ctx.author.send(embed=embed)
-        prompt = await ctx.author.send("Enter your account's Riot username. (Not your RiotID, but your login username)")
-        interactions[ctx.author.id]["messages"].append(prompt)
-    else:
-        await ctx.send("You currently have an ongoing interaction, please use `!exit` to stop it.")
 
 
 @client.command()
@@ -320,6 +359,20 @@ async def view(ctx: Context, username):
     embed = await create_account_embed(output)
     await ctx.send(embed=embed)
 
+@client.command()
+async def inspect(ctx: Context, username):
+    cur.execute("SELECT * FROM accounts WHERE username=?", (username,))
+    output = cur.fetchall()
+    if len(output) > 0:
+        if output[0][5] == ctx.author.id:
+            embed = await create_account_embed(output, show_password=True)
+            await ctx.author.send(embed=embed)
+        else:
+            embed = discord.Embed(title="You do not have permission to inspect this account.", color=0xff0000)
+            await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(title="No account found with this username.", color=0xff0000)
+        await ctx.send(embed=embed)
 
 @client.event
 async def on_message(msg: discord.Message):
@@ -419,11 +472,32 @@ async def on_message(msg: discord.Message):
                     intobj["messages"].append(prompt)
                 await view(msg.channel, username)
                 del interactions[msg.author.id]
+        if intobj["fn"] == "update" and msg.channel == intobj["react_message"].channel and intobj["step"] == 2:
+            now = int(time.time())
+            if intobj["choice"] == "riotid":
+                cur.execute(
+                    'UPDATE accounts SET riotid=?, tag=?, last_updated=? WHERE username = ?',
+                    (msg.content.split("#")[0], msg.content.split("#")[1],now, intobj["username"]))
+            elif intobj["choice"] == "owner":
+                cur.execute(
+                    'UPDATE accounts SET owner=?, last_updated=? WHERE username = ?',
+                    (msg.author.id,now, intobj["username"]))
+            elif intobj["choice"] == "rank":
+                cur.execute(
+                    'UPDATE accounts SET rank=?, last_updated=? WHERE username = ?',
+                    (rank_map[extract_rank(msg.content)],now, intobj["username"]))
+            else:
+                cur.execute(
+                    'UPDATE accounts SET ?=?, last_updated=? WHERE username = ?',
+                    (intobj["choice"], msg.content,now, intobj["username"]))
+            for i in intobj["messages"]:
+                await i.delete()
+            await msg.delete()
 
 
 @client.event
 async def on_reaction_add(reaction, user):
-    if user.id in interactions:
+    if user.id in interactions and interactions[user.id]["react_message"].id == reaction.message.id:
         intobj = interactions[user.id]
         if intobj["fn"] == "reqapproval":
             if reaction.emoji == "✅":
@@ -431,8 +505,25 @@ async def on_reaction_add(reaction, user):
                 await intobj["ctx"].author.send(embed=await create_account_embed(intobj["account"], show_password=True))
             elif reaction.emoji == "❌":
                 await intobj["ctx"].author.send("Your request was denied.")
-        await intobj["apmsg"].delete()
-        del interactions[user.id]
+            await intobj["apmsg"].delete()
+            del interactions[user.id]
+        if intobj["fn"] == "update" and intobj["step"] == 1:
+            channel = intobj["react_message"].channel
+            if reaction.emoji == "1️⃣":
+                prompt = await channel.send("Please enter the new password:")
+                intobj["choice"] = "password"
+            elif reaction.emoji == "2️⃣":
+                prompt = await channel.send("Please enter the new Riot ID (NAME#TAG):")
+                intobj["choice"] = "riotid"
+            elif reaction.emoji == "3️⃣":
+                prompt = await channel.send("Please enter the new rank:")
+                intobj["choice"] = "rank"
+            elif reaction.emoji == "4️⃣":
+                prompt = await channel.send("Please tag the new owner:")
+                intobj["choice"] = "owner"
+            intobj["messages"].append(prompt)
+            intobj["step"] += 1;
+        await reaction.message.delete()
 
 
 def extract_rank(msg):
