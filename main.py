@@ -490,6 +490,7 @@ async def on_message(msg: discord.Message):
                 cur.execute(
                     'UPDATE accounts SET ?=?, last_updated=? WHERE username = ?',
                     (intobj["choice"], msg.content,now, intobj["username"]))
+            con.commit()
             for i in intobj["messages"]:
                 await i.delete()
             await msg.delete()
