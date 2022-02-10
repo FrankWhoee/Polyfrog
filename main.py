@@ -1,16 +1,19 @@
 import argparse
+import asyncio
 import math
 import os
 import sqlite3
 import subprocess
 import time
 from datetime import datetime
-
+from datetime import date
+from datetime import timedelta
 import discord
 from discord import Reaction, User
 from discord.ext import commands
 from discord.ext.commands import Context
 from dotenv import load_dotenv
+from threading import Timer
 
 # from discord.ext.commands import client
 
@@ -91,25 +94,63 @@ sdnguild = None
 emojis = None
 emoji_map = {}
 
+wordle_role_id = 941263746674884648
+sdn_role_id = 935004221844115487
+sdn_guild_id = 935001989727809616
+wordle_spoiler_id = 941264133695873034
+wordle_role = None
+
+loop = asyncio.get_event_loop()
+
+def seconds_till_midnight(current_time):
+    """
+    :param current_time: Datetime.datetime
+    :return time till midnight in seconds:
+    """
+    # Add 1 day to the current datetime, which will give us some time tomorrow
+    # Now set all the time values of tomorrow's datetime value to zero,
+    # which gives us midnight tonight
+    midnight = (current_time + timedelta(days=1)).replace(hour=0, minute=0, microsecond=0, second=0)
+    # Subtracting 2 datetime values returns a timedelta
+    # now we can return the total amount of seconds till midnight
+    return (midnight - current_time).seconds
+
 
 @client.event
 async def on_ready():
+    global wordle_role
     global start_time
     global sdnguild
     global emojis
     print('Logged in as {0.user}'.format(client))
     start_time = datetime.today()
     sdnguild = client.get_guild(935001989727809616)
+    wordle_role = sdnguild.get_role(wordle_role_id)
     emojis = await sdnguild.fetch_emojis()
     for e in emojis:
         emoji_map[e.name] = e
+
+    timer = Timer(seconds_till_midnight(datetime.now()), run_clear)
+    timer.start()
     await client.change_presence(activity=discord.Activity(name="joinsdn.com", type=discord.ActivityType.watching))
+
+async def clear_wordle_roles():
+    async for m in sdnguild.fetch_members():
+        if wordle_role in m.roles:
+            await m.remove_roles(wordle_role)
+    timer = Timer(seconds_till_midnight(datetime.now()), run_clear)
+    timer.start()
+
+
+def run_clear():
+    asyncio.run_coroutine_threadsafe(clear_wordle_roles(), loop)
+
 
 
 @client.event
 async def on_member_join(member):
-    if member.guild.id == 935001989727809616:
-        sdnrole = member.guild.get_role(935004221844115487)
+    if member.guild.id == sdn_guild_id:
+        sdnrole = member.guild.get_role(sdn_role_id)
         await member.add_roles(sdnrole)
         await member.edit(nick="SDN " + member.name)
 
@@ -240,7 +281,8 @@ async def update(ctx: Context, *args):
             await prompt.add_reaction("2️⃣")
             await prompt.add_reaction("3️⃣")
             await prompt.add_reaction("4️⃣")
-            interactions[ctx.author.id] = {"fn": "update", "step": 1, "data": [], "messages": [], "react_message": prompt,
+            interactions[ctx.author.id] = {"fn": "update", "step": 1, "data": [], "messages": [],
+                                           "react_message": prompt,
                                            "username": args[0]}
             interactions[ctx.author.id]["messages"].append(prompt)
         else:
@@ -359,6 +401,7 @@ async def view(ctx: Context, username):
     embed = await create_account_embed(output)
     await ctx.send(embed=embed)
 
+
 @client.command()
 async def inspect(ctx: Context, username):
     cur.execute("SELECT * FROM accounts WHERE username=?", (username,))
@@ -374,11 +417,16 @@ async def inspect(ctx: Context, username):
         embed = discord.Embed(title="No account found with this username.", color=0xff0000)
         await ctx.send(embed=embed)
 
+
 @client.event
 async def on_message(msg: discord.Message):
     if msg.content.startswith(prefix):
         await client.process_commands(msg)
         return
+    elif msg.content.startswith("Wordle"):
+        await msg.delete()
+        await msg.guild.get_channel(wordle_spoiler_id).send(msg.author.mention + "\n" + msg.content)
+        await msg.author.add_roles(wordle_role)
     if msg.author.id in interactions.keys():
         intobj = interactions[msg.author.id]
         if intobj["fn"] == "add" and msg.channel.recipient == msg.author:
@@ -477,19 +525,19 @@ async def on_message(msg: discord.Message):
             if intobj["choice"] == "riotid":
                 cur.execute(
                     'UPDATE accounts SET riotid=?, tag=?, last_updated=? WHERE username = ?',
-                    (msg.content.split("#")[0], msg.content.split("#")[1],now, intobj["username"]))
+                    (msg.content.split("#")[0], msg.content.split("#")[1], now, intobj["username"]))
             elif intobj["choice"] == "owner":
                 cur.execute(
                     'UPDATE accounts SET owner=?, last_updated=? WHERE username = ?',
-                    (msg.author.id,now, intobj["username"]))
+                    (msg.author.id, now, intobj["username"]))
             elif intobj["choice"] == "rank":
                 cur.execute(
                     'UPDATE accounts SET rank=?, last_updated=? WHERE username = ?',
-                    (rank_map[extract_rank(msg.content)],now, intobj["username"]))
+                    (rank_map[extract_rank(msg.content)], now, intobj["username"]))
             else:
                 cur.execute(
                     'UPDATE accounts SET ?=?, last_updated=? WHERE username = ?',
-                    (intobj["choice"], msg.content,now, intobj["username"]))
+                    (intobj["choice"], msg.content, now, intobj["username"]))
             con.commit()
             for i in intobj["messages"]:
                 await i.delete()
@@ -545,6 +593,7 @@ def extract_rank(msg):
     else:
         rank = rank[0] + rank.split(" ")[1]
     return rank
+
 
 
 client.run(os.environ["PF_TOKEN"])
